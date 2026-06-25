@@ -31,7 +31,7 @@ let domainName = getSelect("domainName").value.trim();
 const targetEl: HTMLInputElement | null = document.querySelector("#target-input");
 
 // Name for demo user
-const displayName = "SIP.js Demo";
+let holdSession: Session | null;
 
 const forcePCMU = (sessionDescription: RTCSessionDescriptionInit) => {
   const { type } = sessionDescription;
@@ -88,12 +88,132 @@ const blindTransferEvent = async () => {
     await session.refer(target);
   }
 };
+
 const attendedTransferEvent = async () => {
+  if (holdCheckbox.checked && holdSession) {
+    await holdSession.refer(session);
+  }
+};
+
+const consult = async () => {
+  const target = targetEl?.value ?? "N/a";
   const domainName = getSelect("domainName").value.trim();
-  const target = UserAgent.makeURI(`sip:${targetEl?.value}@${domainName}`);
-  if (target) {
-    const replacementSession = new Inviter(userAgent, target);
-    await session.refer(replacementSession);
+  targetSpan.innerHTML = target;
+  if (userAgent.isConnected()) {
+    const uri = UserAgent.makeURI(`sip:${target}@${domainName}`);
+    if (uri) {
+      session = new Inviter(userAgent, uri, { earlyMedia: true });
+      session.stateChange.addListener((state: SessionState) => {
+        if (state === SessionState.Established) {
+          console.log("Speaking with Colleague B. Caller A is still on hold.");
+        }
+      });
+      await session.invite();
+    }
+  }
+};
+
+const call = async () => {
+  const target = targetEl?.value ?? "N/a";
+  targetSpan.innerHTML = target;
+  if (userAgent.isConnected()) {
+    try {
+      const uri = UserAgent.makeURI(`sip:${target}@${domainName}`);
+      if (uri) {
+        inviter = new Inviter(userAgent, uri, { earlyMedia: true });
+        await inviter.invite({
+          sessionDescriptionHandlerModifiers: [forcePCMU],
+          withoutSdp: false,
+          requestDelegate: {
+            onAccept(response) {
+              inviter && (session = inviter);
+              console.log(response);
+              callButton.disabled = true;
+              hangupButton.disabled = false;
+              keypadDisabled(false);
+              holdCheckboxDisabled(false);
+              muteCheckboxDisabled(false);
+              if (!hasCall) {
+                setupRemoteMedia(inviter);
+                hasCall = true;
+              }
+            },
+            onProgress(response) {
+              inviter && (session = inviter);
+              console.log(response);
+              callButton.disabled = true;
+              hangupButton.disabled = false;
+              keypadDisabled(false);
+              holdCheckboxDisabled(false);
+              muteCheckboxDisabled(false);
+              if (!hasCall) {
+                setupRemoteMedia(inviter);
+                hasCall = true;
+              }
+            },
+            onReject(response) {
+              console.log(response);
+              callButton.disabled = false;
+              hangupButton.disabled = true;
+              keypadDisabled(true);
+              holdCheckboxDisabled(true);
+              muteCheckboxDisabled(true);
+              if (hasCall) {
+                cleanupMedia();
+                hasCall = false;
+              }
+            }
+          }
+        });
+        const at = (e: Event) => {
+          attendedTransferEvent();
+        };
+        const bt = (e: Event) => {
+          blindTransferEvent();
+        };
+        getButton("consult").addEventListener("click", consult);
+        getButton("attended-transfer").addEventListener("click", at);
+        getButton("blind-transfer").addEventListener("click", bt);
+        inviter.stateChange.addListener((state: SessionState) => {
+          switch (state) {
+            case SessionState.Initial:
+              getSpan("call-status").innerHTML = "Ringing";
+              break;
+            case SessionState.Establishing:
+              break;
+            case SessionState.Established:
+              callButton.disabled = true;
+              hangupButton.disabled = false;
+              keypadDisabled(false);
+              holdCheckboxDisabled(false);
+              muteCheckboxDisabled(false);
+              if (!hasCall) {
+                setupRemoteMedia(inviter);
+                hasCall = true;
+              }
+              break;
+            case SessionState.Terminating:
+            // fall through
+            case SessionState.Terminated:
+              getButton("attended-transfer").removeEventListener("click", at);
+              getButton("blind-transfer").removeEventListener("click", bt);
+              callButton.disabled = false;
+              hangupButton.disabled = true;
+              keypadDisabled(true);
+              holdCheckboxDisabled(true);
+              muteCheckboxDisabled(true);
+              cleanupMedia();
+              break;
+            default:
+              throw new Error("Unknown session state.");
+          }
+        });
+      }
+    } catch (error) {
+      callButton.disabled = false;
+      hangupButton.disabled = true;
+      alert("Failed to call.\n" + error);
+    }
   }
 };
 
@@ -134,6 +254,7 @@ const initUserAgent = () => {
         const bt = (e: Event) => {
           blindTransferEvent();
         };
+        getButton("consult").addEventListener("click", consult);
         getButton("accept").addEventListener("click", accept);
         getButton("reject").addEventListener("click", rejct);
         getButton("attended-transfer").addEventListener("click", at);
@@ -147,9 +268,9 @@ const initUserAgent = () => {
             case SessionState.Initial:
               break;
             case SessionState.Establishing:
+              invitation && (session = invitation);
               break;
             case SessionState.Established:
-              session = invitation;
               callButton.disabled = true;
               hangupButton.disabled = false;
               keypadDisabled(false);
@@ -163,6 +284,7 @@ const initUserAgent = () => {
             case SessionState.Terminating:
             // fall through
             case SessionState.Terminated:
+              getButton("consult").removeEventListener("click", consult);
               getButton("accept").removeEventListener("click", accept);
               getButton("reject").removeEventListener("click", rejct);
               getButton("attended-transfer").removeEventListener("click", at);
@@ -253,103 +375,7 @@ let session: Session;
 
 // Add click listener to call button
 callButton.addEventListener("click", async () => {
-  const target = targetEl?.value ?? "N/a";
-  targetSpan.innerHTML = target;
-  if (userAgent.isConnected()) {
-    try {
-      const uri = UserAgent.makeURI(`sip:${target}@${domainName}`);
-      if (uri) {
-        inviter = new Inviter(userAgent, uri, { earlyMedia: true });
-        await inviter.invite({
-          sessionDescriptionHandlerModifiers: [forcePCMU],
-          withoutSdp: false,
-          requestDelegate: {
-            onAccept(response) {
-              console.log(response);
-              callButton.disabled = true;
-              hangupButton.disabled = false;
-              keypadDisabled(false);
-              holdCheckboxDisabled(false);
-              muteCheckboxDisabled(false);
-              if (!hasCall) {
-                setupRemoteMedia(inviter);
-                hasCall = true;
-              }
-            },
-            onProgress(response) {
-              console.log(response);
-              callButton.disabled = true;
-              hangupButton.disabled = false;
-              keypadDisabled(false);
-              holdCheckboxDisabled(false);
-              muteCheckboxDisabled(false);
-              if (!hasCall) {
-                setupRemoteMedia(inviter);
-                hasCall = true;
-              }
-            },
-            onReject(response) {
-              console.log(response);
-              callButton.disabled = false;
-              hangupButton.disabled = true;
-              keypadDisabled(true);
-              holdCheckboxDisabled(true);
-              muteCheckboxDisabled(true);
-              if (hasCall) {
-                cleanupMedia();
-                hasCall = false;
-              }
-            }
-          }
-        });
-        const at = (e: Event) => {
-          attendedTransferEvent();
-        };
-        const bt = (e: Event) => {
-          blindTransferEvent();
-        };
-        inviter.stateChange.addListener((state: SessionState) => {
-          switch (state) {
-            case SessionState.Initial:
-              getSpan("call-status").innerHTML = "Ringing";
-              break;
-            case SessionState.Establishing:
-              session = inviter;
-              break;
-            case SessionState.Established:
-              callButton.disabled = true;
-              hangupButton.disabled = false;
-              keypadDisabled(false);
-              holdCheckboxDisabled(false);
-              muteCheckboxDisabled(false);
-              if (!hasCall) {
-                setupRemoteMedia(inviter);
-                hasCall = true;
-              }
-              break;
-            case SessionState.Terminating:
-            // fall through
-            case SessionState.Terminated:
-              getButton("attended-transfer").removeEventListener("click", at);
-              getButton("blind-transfer").removeEventListener("click", bt);
-              callButton.disabled = false;
-              hangupButton.disabled = true;
-              keypadDisabled(true);
-              holdCheckboxDisabled(true);
-              muteCheckboxDisabled(true);
-              cleanupMedia();
-              break;
-            default:
-              throw new Error("Unknown session state.");
-          }
-        });
-      }
-    } catch (error) {
-      callButton.disabled = false;
-      hangupButton.disabled = true;
-      alert("Failed to call.\n" + error);
-    }
-  }
+  await call();
 });
 
 // Add click listener to hangup button
@@ -390,7 +416,7 @@ keypad.forEach((button) => {
   button.addEventListener("click", () => {
     const tone = button.textContent;
     if (tone) {
-      inviter?.sessionDescriptionHandler?.sendDtmf(tone);
+      session?.sessionDescriptionHandler?.sendDtmf(tone);
       dtmfSpan.innerHTML += tone;
     }
   });
@@ -409,10 +435,12 @@ holdCheckbox.addEventListener("change", async () => {
       await session.invite({
         sessionDescriptionHandlerModifiers: [holdModifier]
       });
+      holdSession = session;
     } else {
       await session.invite({
         sessionDescriptionHandlerModifiers: []
       });
+      holdSession = null;
     }
   } catch (error) {
     alert(`Failed to ${holdCheckbox.checked ? "hold" : "unhold"} call.\n` + error);
