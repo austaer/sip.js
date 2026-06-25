@@ -61,3 +61,11 @@ export function getVideo(id: string): HTMLVideoElement {
   }
   return el;
 }
+
+export function getSelect(id: string): HTMLSelectElement {
+  const el = document.getElementById(id);
+  if (!(el instanceof HTMLSelectElement)) {
+    throw new Error(`Element "${id}" not found or not a select element.`);
+  }
+  return el;
+}

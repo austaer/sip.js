@@ -1,7 +1,16 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
 /* eslint-disable no-console */
-import { SimpleUser, SimpleUserDelegate, SimpleUserOptions } from "../lib/platform/web/index.js";
-import { getAudio, getButton, getButtons, getInput, getSpan } from "./demo-utils.js";
+import { Invitation } from "../lib/api/invitation.js";
+import { Inviter } from "../lib/api/inviter.js";
+import { RegistererRegisterOptions } from "../lib/api/registerer-register-options.js";
+import { RegistererState } from "../lib/api/registerer-state.js";
+import { Registerer } from "../lib/api/registerer.js";
+import { SessionState } from "../lib/api/session-state.js";
+import { Session } from "../lib/api/session.js";
+import { UserAgentOptions } from "../lib/api/user-agent-options.js";
+import { UserAgent } from "../lib/api/user-agent.js";
+import { holdModifier, SessionDescriptionHandler, SimpleUser } from "../lib/platform/web/index.js";
+import { getAudio, getButton, getButtons, getInput, getSelect, getSpan } from "./demo-utils.js";
 
 const serverSpan = getSpan("server");
 const targetSpan = getSpan("target");
@@ -14,132 +23,366 @@ const keypad = getButtons("keypad");
 const dtmfSpan = getSpan("dtmf");
 const holdCheckbox = getInput("hold");
 const muteCheckbox = getInput("mute");
+let domainName = getSelect("domainName").value.trim();
 
 // WebSocket Server URL
-const webSocketServer = "wss://edge.sip.onsip.com";
-serverSpan.innerHTML = webSocketServer;
 
 // Destination URI
-const target = "sip:echo@sipjs.onsip.com";
-targetSpan.innerHTML = target;
+const targetEl: HTMLInputElement | null = document.querySelector("#target-input");
 
 // Name for demo user
 const displayName = "SIP.js Demo";
 
-// SimpleUser delegate
-const simpleUserDelegate: SimpleUserDelegate = {
-  onCallCreated: (): void => {
-    console.log(`[${displayName}] Call created`);
-    callButton.disabled = true;
-    hangupButton.disabled = false;
-    keypadDisabled(true);
-    holdCheckboxDisabled(true);
-    muteCheckboxDisabled(true);
-  },
-  onCallAnswered: (): void => {
-    console.log(`[${displayName}] Call answered`);
-    keypadDisabled(false);
-    holdCheckboxDisabled(false);
-    muteCheckboxDisabled(false);
-  },
-  onCallHangup: (): void => {
-    console.log(`[${displayName}] Call hangup`);
-    callButton.disabled = false;
-    hangupButton.disabled = true;
-    keypadDisabled(true);
-    holdCheckboxDisabled(true);
-    muteCheckboxDisabled(true);
-  },
-  onCallHold: (held: boolean): void => {
-    console.log(`[${displayName}] Call hold ${held}`);
-    holdCheckbox.checked = held;
-  }
-};
+const forcePCMU = (sessionDescription: RTCSessionDescriptionInit) => {
+  const { type } = sessionDescription;
+  let { sdp } = sessionDescription;
+  const payloadsToRemove = ["9", "111"];
 
-// SimpleUser options
-const simpleUserOptions: SimpleUserOptions = {
-  delegate: simpleUserDelegate,
-  media: {
-    remote: {
-      audio: audioElement
+  // Logic to reorder or remove codecs in the SDP string
+  // (This often involves string manipulation or a dedicated SDP manipulation library)
+  console.debug("Original SDP:", sdp);
+  if (typeof sdp !== "string") return Promise.reject();
+  const sdpLines = sdp.split("\r\n");
+
+  const mLineIndex = sdpLines.findIndex((l) => l.startsWith("m=audio"));
+  if (mLineIndex === -1) Promise.resolve({ sdp, type });
+
+  const parts = sdpLines[mLineIndex].split(" ");
+  const header = parts.slice(0, 3);
+  const payloads = parts.slice(3);
+
+  const filteredPayloads = payloads.filter((p) => !payloadsToRemove.includes(p));
+
+  if (filteredPayloads.length === 0) {
+    return Promise.resolve({ sdp, type });
+  }
+
+  sdpLines[mLineIndex] = [...header, ...filteredPayloads].join(" ");
+
+  const removeSet = new Set(payloadsToRemove);
+
+  const newLines = sdpLines.filter((line) => {
+    if (line.startsWith("a=rtpmap:") || line.startsWith("a=fmtp:") || line.startsWith("a=rtcp-fb:")) {
+      const payload = line.split(":")[1].split(" ")[0];
+      return !removeSet.has(payload);
     }
-  },
-  userAgentOptions: {
-    // logLevel: "debug",
-    displayName
+    return true;
+  });
+  sdp = newLines.join("\r\n");
+  console.debug("Modified SDP:", sdp);
+  return Promise.resolve({ sdp, type });
+};
+
+const acceptEvent = async (invitation: Invitation) => {
+  await invitation.accept();
+  getSpan("call-status").innerHTML = "Answered";
+};
+const rejectEvent = async (invitation: Invitation) => {
+  await invitation.reject();
+  getSpan("call-status").innerHTML = "Idle";
+};
+const blindTransferEvent = async () => {
+  const domainName = getSelect("domainName").value.trim();
+  const target = UserAgent.makeURI(`sip:${targetEl?.value}@${domainName}`);
+  if (target) {
+    await session.refer(target);
+  }
+};
+const attendedTransferEvent = async () => {
+  const domainName = getSelect("domainName").value.trim();
+  const target = UserAgent.makeURI(`sip:${targetEl?.value}@${domainName}`);
+  if (target) {
+    const replacementSession = new Inviter(userAgent, target);
+    await session.refer(replacementSession);
   }
 };
 
-// SimpleUser construction
-const simpleUser = new SimpleUser(webSocketServer, simpleUserOptions);
+const initUserAgent = () => {
+  const usernameInput = getInput("username");
+  const authorizationUsername = usernameInput.value.trim();
+  domainName = getSelect("domainName").value.trim();
+  const authorizationPassword = getInput("password").value;
+  const contactName = getInput("contactName")?.value ?? "";
+  const host = getSelect("host").value;
+  const port = getInput("port")?.value ?? "5066";
+
+  const transportOptions: UserAgentOptions = {
+    uri: UserAgent.makeURI(`sip:${authorizationUsername}@${domainName}`),
+    authorizationUsername,
+    authorizationPassword,
+    contactName,
+    displayName: contactName,
+    transportOptions: {
+      server: `ws://${host}:${port}`,
+      connectionTimeout: 5000,
+      keepAliveInterval: 30,
+      keepAliveDebounce: 10,
+      traceSip: false
+    },
+    delegate: {
+      onInvite(invitation) {
+        console.log(invitation);
+        const accept = (e: Event) => {
+          acceptEvent(invitation);
+        };
+        const rejct = (e: Event) => {
+          rejectEvent(invitation);
+        };
+        const at = (e: Event) => {
+          attendedTransferEvent();
+        };
+        const bt = (e: Event) => {
+          blindTransferEvent();
+        };
+        getButton("accept").addEventListener("click", accept);
+        getButton("reject").addEventListener("click", rejct);
+        getButton("attended-transfer").addEventListener("click", at);
+        getButton("blind-transfer").addEventListener("click", bt);
+        if (invitation.state == SessionState.Initial) {
+          getSpan("call-status").innerHTML = "Ringing";
+        }
+        invitation.stateChange.addListener((state: SessionState) => {
+          console.log(state);
+          switch (state) {
+            case SessionState.Initial:
+              break;
+            case SessionState.Establishing:
+              break;
+            case SessionState.Established:
+              session = invitation;
+              callButton.disabled = true;
+              hangupButton.disabled = false;
+              keypadDisabled(false);
+              holdCheckboxDisabled(false);
+              muteCheckboxDisabled(false);
+              if (!hasCall) {
+                setupRemoteMedia(invitation);
+                hasCall = true;
+              }
+              break;
+            case SessionState.Terminating:
+            // fall through
+            case SessionState.Terminated:
+              getButton("accept").removeEventListener("click", accept);
+              getButton("reject").removeEventListener("click", rejct);
+              getButton("attended-transfer").removeEventListener("click", at);
+              getButton("blind-transfer").removeEventListener("click", bt);
+              callButton.disabled = false;
+              hangupButton.disabled = true;
+              keypadDisabled(true);
+              holdCheckboxDisabled(true);
+              muteCheckboxDisabled(true);
+              getSpan("call-status").innerHTML = "Idle";
+              cleanupMedia();
+              break;
+            default:
+              throw new Error("Unknown session state.");
+          }
+        });
+      }
+    }
+  };
+
+  userAgent = new UserAgent(transportOptions);
+};
+
+const remoteStream = new MediaStream();
+function setupRemoteMedia(session: Session) {
+  const sdh = session.sessionDescriptionHandler as SessionDescriptionHandler;
+  sdh.peerConnection!.getReceivers().forEach((receiver) => {
+    if (receiver.track) {
+      remoteStream.addTrack(receiver.track);
+    }
+  });
+  audioElement.srcObject = remoteStream;
+  audioElement.play();
+}
+
+function cleanupMedia() {
+  audioElement.srcObject = null;
+  audioElement.pause();
+}
+
+let userAgent: UserAgent;
+let registerer: Registerer;
+let inviter: Inviter;
 
 // Add click listener to connect button
-connectButton.addEventListener("click", () => {
+connectButton.addEventListener("click", async () => {
   connectButton.disabled = true;
   disconnectButton.disabled = true;
   callButton.disabled = true;
   hangupButton.disabled = true;
-  simpleUser
-    .connect()
-    .then(() => {
+  initUserAgent();
+  if (!userAgent?.isConnected()) {
+    try {
+      await userAgent?.start();
+      registerer = new Registerer(userAgent, {});
+      await registerer.register({
+        requestDelegate: {
+          onReject(response) {
+            connectButton.disabled = false;
+            disconnectButton.disabled = true;
+            callButton.disabled = true;
+            hangupButton.disabled = false;
+            alert("Failed to connect.\n" + response.message.statusCode);
+          }
+        }
+      });
       connectButton.disabled = true;
       disconnectButton.disabled = false;
       callButton.disabled = false;
       hangupButton.disabled = true;
-    })
-    .catch((error: Error) => {
+      const host = getSelect("host").value;
+      const port = getInput("port")?.value ?? "5066";
+      const webSocketServer = `${host}:${port}`;
+      serverSpan.innerHTML = webSocketServer;
+    } catch (error) {
       connectButton.disabled = false;
-      console.error(`[${simpleUser.id}] failed to connect`);
+      disconnectButton.disabled = true;
+      callButton.disabled = true;
+      hangupButton.disabled = false;
       console.error(error);
       alert("Failed to connect.\n" + error);
-    });
+    }
+  }
 });
 
+let hasCall = false;
+let session: Session;
+
 // Add click listener to call button
-callButton.addEventListener("click", () => {
-  callButton.disabled = true;
-  hangupButton.disabled = true;
-  simpleUser
-    .call(target, {
-      inviteWithoutSdp: false
-    })
-    .catch((error: Error) => {
-      console.error(`[${simpleUser.id}] failed to place call`);
-      console.error(error);
-      alert("Failed to place call.\n" + error);
-    });
+callButton.addEventListener("click", async () => {
+  const target = targetEl?.value ?? "N/a";
+  targetSpan.innerHTML = target;
+  if (userAgent.isConnected()) {
+    try {
+      const uri = UserAgent.makeURI(`sip:${target}@${domainName}`);
+      if (uri) {
+        inviter = new Inviter(userAgent, uri, { earlyMedia: true });
+        await inviter.invite({
+          sessionDescriptionHandlerModifiers: [forcePCMU],
+          withoutSdp: false,
+          requestDelegate: {
+            onAccept(response) {
+              console.log(response);
+              callButton.disabled = true;
+              hangupButton.disabled = false;
+              keypadDisabled(false);
+              holdCheckboxDisabled(false);
+              muteCheckboxDisabled(false);
+              if (!hasCall) {
+                setupRemoteMedia(inviter);
+                hasCall = true;
+              }
+            },
+            onProgress(response) {
+              console.log(response);
+              callButton.disabled = true;
+              hangupButton.disabled = false;
+              keypadDisabled(false);
+              holdCheckboxDisabled(false);
+              muteCheckboxDisabled(false);
+              if (!hasCall) {
+                setupRemoteMedia(inviter);
+                hasCall = true;
+              }
+            },
+            onReject(response) {
+              console.log(response);
+              callButton.disabled = false;
+              hangupButton.disabled = true;
+              keypadDisabled(true);
+              holdCheckboxDisabled(true);
+              muteCheckboxDisabled(true);
+              if (hasCall) {
+                cleanupMedia();
+                hasCall = false;
+              }
+            }
+          }
+        });
+        const at = (e: Event) => {
+          attendedTransferEvent();
+        };
+        const bt = (e: Event) => {
+          blindTransferEvent();
+        };
+        inviter.stateChange.addListener((state: SessionState) => {
+          switch (state) {
+            case SessionState.Initial:
+              getSpan("call-status").innerHTML = "Ringing";
+              break;
+            case SessionState.Establishing:
+              session = inviter;
+              break;
+            case SessionState.Established:
+              callButton.disabled = true;
+              hangupButton.disabled = false;
+              keypadDisabled(false);
+              holdCheckboxDisabled(false);
+              muteCheckboxDisabled(false);
+              if (!hasCall) {
+                setupRemoteMedia(inviter);
+                hasCall = true;
+              }
+              break;
+            case SessionState.Terminating:
+            // fall through
+            case SessionState.Terminated:
+              getButton("attended-transfer").removeEventListener("click", at);
+              getButton("blind-transfer").removeEventListener("click", bt);
+              callButton.disabled = false;
+              hangupButton.disabled = true;
+              keypadDisabled(true);
+              holdCheckboxDisabled(true);
+              muteCheckboxDisabled(true);
+              cleanupMedia();
+              break;
+            default:
+              throw new Error("Unknown session state.");
+          }
+        });
+      }
+    } catch (error) {
+      callButton.disabled = false;
+      hangupButton.disabled = true;
+      alert("Failed to call.\n" + error);
+    }
+  }
 });
 
 // Add click listener to hangup button
 hangupButton.addEventListener("click", () => {
   callButton.disabled = true;
   hangupButton.disabled = true;
-  simpleUser.hangup().catch((error: Error) => {
-    console.error(`[${simpleUser.id}] failed to hangup call`);
-    console.error(error);
-    alert("Failed to hangup call.\n" + error);
-  });
+  console.log(session);
+  if (userAgent.isConnected() && session) {
+    try {
+      session.bye();
+    } catch (error) {
+      console.error(error);
+      alert("Failed to hangup call.\n" + error);
+    }
+  }
 });
 
 // Add click listener to disconnect button
-disconnectButton.addEventListener("click", () => {
+disconnectButton.addEventListener("click", async () => {
   connectButton.disabled = true;
   disconnectButton.disabled = true;
   callButton.disabled = true;
   hangupButton.disabled = true;
-  simpleUser
-    .disconnect()
-    .then(() => {
-      connectButton.disabled = false;
-      disconnectButton.disabled = true;
-      callButton.disabled = true;
-      hangupButton.disabled = true;
-    })
-    .catch((error: Error) => {
-      console.error(`[${simpleUser.id}] failed to disconnect`);
-      console.error(error);
-      alert("Failed to disconnect.\n" + error);
-    });
+  try {
+    await registerer.unregister();
+    await userAgent.stop();
+    connectButton.disabled = false;
+    disconnectButton.disabled = true;
+    callButton.disabled = true;
+    hangupButton.disabled = true;
+  } catch (error) {
+    console.error(error);
+  }
 });
 
 // Add click listeners to keypad buttons
@@ -147,9 +390,8 @@ keypad.forEach((button) => {
   button.addEventListener("click", () => {
     const tone = button.textContent;
     if (tone) {
-      simpleUser.sendDTMF(tone).then(() => {
-        dtmfSpan.innerHTML += tone;
-      });
+      inviter?.sessionDescriptionHandler?.sendDtmf(tone);
+      dtmfSpan.innerHTML += tone;
     }
   });
 });
@@ -161,23 +403,19 @@ const keypadDisabled = (disabled: boolean): void => {
 };
 
 // Add change listener to hold checkbox
-holdCheckbox.addEventListener("change", () => {
-  if (holdCheckbox.checked) {
-    // Checkbox is checked..
-    simpleUser.hold().catch((error: Error) => {
-      holdCheckbox.checked = false;
-      console.error(`[${simpleUser.id}] failed to hold call`);
-      console.error(error);
-      alert("Failed to hold call.\n" + error);
-    });
-  } else {
-    // Checkbox is not checked..
-    simpleUser.unhold().catch((error: Error) => {
-      holdCheckbox.checked = true;
-      console.error(`[${simpleUser.id}] failed to unhold call`);
-      console.error(error);
-      alert("Failed to unhold call.\n" + error);
-    });
+holdCheckbox.addEventListener("change", async () => {
+  try {
+    if (holdCheckbox.checked) {
+      await session.invite({
+        sessionDescriptionHandlerModifiers: [holdModifier]
+      });
+    } else {
+      await session.invite({
+        sessionDescriptionHandlerModifiers: []
+      });
+    }
+  } catch (error) {
+    alert(`Failed to ${holdCheckbox.checked ? "hold" : "unhold"} call.\n` + error);
   }
 });
 
@@ -189,22 +427,23 @@ const holdCheckboxDisabled = (disabled: boolean): void => {
 
 // Add change listener to mute checkbox
 muteCheckbox.addEventListener("change", () => {
+  const sdh = session.sessionDescriptionHandler as SessionDescriptionHandler;
   if (muteCheckbox.checked) {
     // Checkbox is checked..
-    simpleUser.mute();
-    if (simpleUser.isMuted() === false) {
-      muteCheckbox.checked = false;
-      console.error(`[${simpleUser.id}] failed to mute call`);
-      alert("Failed to mute call.\n");
-    }
+    sdh?.peerConnection?.getSenders().forEach((sender) => {
+      if (sender.track && sender.track.kind === "audio") {
+        // track.enabled = false stops the track from capturing sound (mutes local mic)
+        sender.track.enabled = false;
+      }
+    });
   } else {
     // Checkbox is not checked..
-    simpleUser.unmute();
-    if (simpleUser.isMuted() === true) {
-      muteCheckbox.checked = true;
-      console.error(`[${simpleUser.id}] failed to unmute call`);
-      alert("Failed to unmute call.\n");
-    }
+    sdh?.peerConnection?.getSenders().forEach((sender) => {
+      if (sender.track && sender.track.kind === "audio") {
+        // track.enabled = false stops the track from capturing sound (mutes local mic)
+        sender.track.enabled = true;
+      }
+    });
   }
 });
 
