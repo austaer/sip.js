@@ -29,9 +29,9 @@
             <li>Port: <input id="port" value="5066" /></li>
             <li>Contact Name: <input type="text" id="contactName" value="1001"></li>
             <li>Domain Name: <select id="domainName">
-                <option value="fusionpbx.local">fusionpbx.local</option>
-                <option value="e023808">e023808</option>
-            </select></li>
+                    <option value="fusionpbx.local">fusionpbx.local</option>
+                    <option value="e023808">e023808</option>
+                </select></li>
             <li>Username: <input type="text" id="username" value="1001"></li>
             <li>Password: <input type="text" id="password" value="1001"></li>
         </ol>
@@ -65,47 +65,58 @@
     <p>
         Status:
         <span id="call-status">Idle</span>
-        <button id="accept">Answer</button></button>
-        <button id="reject">Decline</button></button>
-        <button id="consult">Consult</button></button>
-        <button id="attended-transfer">Attended Transfer</button></button>
-        <button id="blind-transfer">Blind Transfer</button></button>
+        <button id="accept">Answer</button>
+        <button id="reject">Decline</button>
+    </p>
+
+    <p>
+        Action:
+        <button id="hold">Hold</button>
+        <button id="consult">Consult</button>
+        <button id="attended-transfer">Attended Transfer</button>
+        <button id="blind-transfer">Blind Transfer</button>
     </p>
 
     <p>
         While the call is established, DTMF may be sent using the following "keypad"...
     </p>
-    <div class="dtmf">DTMF sent: <span id="dtmf"></span></div>
-    <div>
+    
+    <div style="display: flex;">
         <div>
-            <button class="keypad" disabled>1</button>
-            <button class="keypad" disabled>2</button>
-            <button class="keypad" disabled>3</button>
+            <div class="dtmf">DTMF sent: <span id="dtmf"></span></div>
+            <div>
+                <button class="keypad" disabled>1</button>
+                <button class="keypad" disabled>2</button>
+                <button class="keypad" disabled>3</button>
+            </div>
+            <div>
+                <button class="keypad" disabled>4</button>
+                <button class="keypad" disabled>5</button>
+                <button class="keypad" disabled>6</button>
+            </div>
+            <div>
+                <button class="keypad" disabled>7</button>
+                <button class="keypad" disabled>8</button>
+                <button class="keypad" disabled>9</button>
+            </div>
+            <div>
+                <button class="keypad" disabled>*</button>
+                <button class="keypad" disabled>0</button>
+                <button class="keypad" disabled>#</button>
+            </div>
         </div>
         <div>
-            <button class="keypad" disabled>4</button>
-            <button class="keypad" disabled>5</button>
-            <button class="keypad" disabled>6</button>
-        </div>
-        <div>
-            <button class="keypad" disabled>7</button>
-            <button class="keypad" disabled>8</button>
-            <button class="keypad" disabled>9</button>
-        </div>
-        <div>
-            <button class="keypad" disabled>*</button>
-            <button class="keypad" disabled>0</button>
-            <button class="keypad" disabled>#</button>
+            <div>Hold List</div>
+            <div id="hold-list">
+
+            </div>
         </div>
     </div>
+
 
     <p>
         While the call is established, the session may placed on hold or muted...
     </p>
-    <div>
-        <input type="checkbox" id="hold" name="hold" disabled>
-        <label for="hold">Hold</label>
-    </div>
     <div>
         <input type="checkbox" id="mute" name="mute" disabled>
         <label for="mute">Mute</label>
